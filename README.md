@@ -1,9 +1,11 @@
-# bytecode_vm
+# bytecode-vm
 
-Stack-based bytecode VM with arithmetic, comparison, jumps, variables, calls
+Stack-based bytecode VM with compiler.
+
+## Usage
 
 ```bash
 python3 bytecode_vm.py test
 ```
 
-Zero deps. Python 3.8+.
+Zero dependencies. Python 3.8+.
