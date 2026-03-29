@@ -1,132 +1,178 @@
 #!/usr/bin/env python3
-"""bytecode_vm - Stack-based bytecode VM with compiler."""
-import sys, argparse, struct
+"""bytecode_vm - Stack-based bytecode virtual machine."""
+import sys, struct
 
 # Opcodes
-PUSH, POP, ADD, SUB, MUL, DIV, MOD = 0,1,2,3,4,5,6
-EQ, LT, GT, NOT, AND, OR = 7,8,9,10,11,12
-LOAD, STORE, JUMP, JUMP_IF, JUMP_NOT = 13,14,15,16,17
-CALL, RET, PRINT, HALT = 18,19,20,21
-DUP, SWAP, ROT = 22,23,24
+PUSH = 0x01; POP = 0x02; DUP = 0x03; SWAP = 0x04
+ADD = 0x10; SUB = 0x11; MUL = 0x12; DIV = 0x13; MOD = 0x14; NEG = 0x15
+EQ = 0x20; NE = 0x21; LT = 0x22; GT = 0x23; LE = 0x24; GE = 0x25
+AND = 0x30; OR = 0x31; NOT = 0x32
+JMP = 0x40; JZ = 0x41; JNZ = 0x42
+LOAD = 0x50; STORE = 0x51
+CALL = 0x60; RET = 0x61
+PRINT = 0x70; HALT = 0xFF
 
-OP_NAMES = {v:k for k,v in dict(PUSH=0,POP=1,ADD=2,SUB=3,MUL=4,DIV=5,MOD=6,
-    EQ=7,LT=8,GT=9,NOT=10,AND=11,OR=12,LOAD=13,STORE=14,JUMP=15,
-    JUMP_IF=16,JUMP_NOT=17,CALL=18,RET=19,PRINT=20,HALT=21,DUP=22,SWAP=23,ROT=24).items()}
-
-HAS_ARG = {PUSH, LOAD, STORE, JUMP, JUMP_IF, JUMP_NOT, CALL}
+OP_NAMES = {v: k for k, v in dict(
+    PUSH=0x01, POP=0x02, DUP=0x03, SWAP=0x04,
+    ADD=0x10, SUB=0x11, MUL=0x12, DIV=0x13, MOD=0x14, NEG=0x15,
+    EQ=0x20, NE=0x21, LT=0x22, GT=0x23, LE=0x24, GE=0x25,
+    AND=0x30, OR=0x31, NOT=0x32,
+    JMP=0x40, JZ=0x41, JNZ=0x42,
+    LOAD=0x50, STORE=0x51,
+    CALL=0x60, RET=0x61,
+    PRINT=0x70, HALT=0xFF
+).items()}
 
 class VM:
-    def __init__(self, code, debug=False):
-        self.code = code; self.stack = []; self.vars = {}
-        self.ip = 0; self.frames = []; self.debug = debug; self.output = []
-
+    def __init__(self, code, stack_size=1024):
+        self.code = code
+        self.stack = [0] * stack_size
+        self.sp = 0
+        self.ip = 0
+        self.vars = {}
+        self.call_stack = []
+        self.output = []
+        self.halted = False
+    
+    def push(self, v):
+        self.stack[self.sp] = v
+        self.sp += 1
+    
+    def pop(self):
+        self.sp -= 1
+        return self.stack[self.sp]
+    
+    def peek(self):
+        return self.stack[self.sp - 1]
+    
+    def read_i32(self):
+        v = struct.unpack_from("!i", self.code, self.ip)[0]
+        self.ip += 4
+        return v
+    
     def run(self, max_steps=100000):
-        for step in range(max_steps):
-            if self.ip >= len(self.code): break
-            op = self.code[self.ip]; self.ip += 1
-            arg = None
-            if op in HAS_ARG: arg = self.code[self.ip]; self.ip += 1
-            if self.debug: print(f"  [{step}] {OP_NAMES.get(op,'?')} {arg if arg is not None else ''} stack={self.stack[:8]}")
-            if op == PUSH: self.stack.append(arg)
-            elif op == POP: self.stack.pop()
-            elif op == DUP: self.stack.append(self.stack[-1])
-            elif op == SWAP: self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
-            elif op == ADD: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(a+b)
-            elif op == SUB: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(a-b)
-            elif op == MUL: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(a*b)
-            elif op == DIV: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(a//b if b else 0)
-            elif op == MOD: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(a%b if b else 0)
-            elif op == EQ: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(1 if a==b else 0)
-            elif op == LT: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(1 if a<b else 0)
-            elif op == GT: b,a = self.stack.pop(), self.stack.pop(); self.stack.append(1 if a>b else 0)
-            elif op == NOT: self.stack.append(0 if self.stack.pop() else 1)
-            elif op == LOAD: self.stack.append(self.vars.get(arg, 0))
-            elif op == STORE: self.vars[arg] = self.stack.pop()
-            elif op == JUMP: self.ip = arg
-            elif op == JUMP_IF: self.ip = arg if self.stack.pop() else self.ip
-            elif op == JUMP_NOT: self.ip = arg if not self.stack.pop() else self.ip
-            elif op == CALL: self.frames.append(self.ip); self.ip = arg
+        steps = 0
+        while not self.halted and self.ip < len(self.code) and steps < max_steps:
+            op = self.code[self.ip]
+            self.ip += 1
+            steps += 1
+            
+            if op == PUSH: self.push(self.read_i32())
+            elif op == POP: self.pop()
+            elif op == DUP: self.push(self.peek())
+            elif op == SWAP:
+                a, b = self.pop(), self.pop()
+                self.push(a); self.push(b)
+            elif op == ADD: self.push(self.pop() + self.pop())
+            elif op == SUB:
+                b, a = self.pop(), self.pop()
+                self.push(a - b)
+            elif op == MUL: self.push(self.pop() * self.pop())
+            elif op == DIV:
+                b, a = self.pop(), self.pop()
+                self.push(a // b if b != 0 else 0)
+            elif op == MOD:
+                b, a = self.pop(), self.pop()
+                self.push(a % b if b != 0 else 0)
+            elif op == NEG: self.push(-self.pop())
+            elif op == EQ: self.push(int(self.pop() == self.pop()))
+            elif op == NE: self.push(int(self.pop() != self.pop()))
+            elif op == LT:
+                b, a = self.pop(), self.pop()
+                self.push(int(a < b))
+            elif op == GT:
+                b, a = self.pop(), self.pop()
+                self.push(int(a > b))
+            elif op == LE:
+                b, a = self.pop(), self.pop()
+                self.push(int(a <= b))
+            elif op == GE:
+                b, a = self.pop(), self.pop()
+                self.push(int(a >= b))
+            elif op == AND: self.push(int(bool(self.pop()) and bool(self.pop())))
+            elif op == OR: self.push(int(bool(self.pop()) or bool(self.pop())))
+            elif op == NOT: self.push(int(not self.pop()))
+            elif op == JMP: self.ip = self.read_i32()
+            elif op == JZ:
+                addr = self.read_i32()
+                if self.pop() == 0: self.ip = addr
+            elif op == JNZ:
+                addr = self.read_i32()
+                if self.pop() != 0: self.ip = addr
+            elif op == LOAD:
+                idx = self.read_i32()
+                self.push(self.vars.get(idx, 0))
+            elif op == STORE:
+                idx = self.read_i32()
+                self.vars[idx] = self.pop()
+            elif op == CALL:
+                addr = self.read_i32()
+                self.call_stack.append(self.ip)
+                self.ip = addr
             elif op == RET:
-                if self.frames: self.ip = self.frames.pop()
-                else: break
-            elif op == PRINT: v = self.stack.pop(); self.output.append(v); print(v)
-            elif op == HALT: break
-        return self.stack[-1] if self.stack else 0
+                self.ip = self.call_stack.pop()
+            elif op == PRINT:
+                self.output.append(self.pop())
+            elif op == HALT:
+                self.halted = True
+        return self.output
 
-def assemble(text):
-    labels = {}; code = []; lines = text.strip().split("\n")
-    # First pass: find labels
-    pc = 0
-    for line in lines:
-        line = line.strip().split(";")[0].strip()
-        if not line: continue
-        if line.endswith(":"): labels[line[:-1]] = pc; continue
-        parts = line.split(); pc += 1
-        if parts[0].upper() in [OP_NAMES.get(i,"") for i in HAS_ARG] or (len(parts)>1): pc += 1
-    # Second pass
-    for line in lines:
-        line = line.strip().split(";")[0].strip()
-        if not line or line.endswith(":"): continue
-        parts = line.split()
-        op_name = parts[0].upper()
-        op = {v:k for k,v in OP_NAMES.items()}.get(op_name)
-        if op is None: raise ValueError(f"Unknown op: {op_name}")
-        code.append(op)
-        if len(parts) > 1:
-            arg = parts[1]
-            if arg in labels: code.append(labels[arg])
-            else: code.append(int(arg))
-    return code
+def assemble(*instructions):
+    code = bytearray()
+    for inst in instructions:
+        if isinstance(inst, int):
+            code.append(inst)
+        elif isinstance(inst, tuple):
+            code.append(inst[0])
+            code.extend(struct.pack("!i", inst[1]))
+    return bytes(code)
 
-def main():
-    p = argparse.ArgumentParser(description="Bytecode VM")
-    p.add_argument("file", nargs="?")
-    p.add_argument("--debug", action="store_true")
-    p.add_argument("--demo", action="store_true")
-    args = p.parse_args()
-    if args.demo:
-        # Compute sum 1..100
-        code = [PUSH,0,STORE,0, PUSH,1,STORE,1,  # sum=0, i=1
-                LOAD,1,PUSH,101,LT,JUMP_NOT,30,   # while i<101
-                LOAD,0,LOAD,1,ADD,STORE,0,         # sum+=i
-                LOAD,1,PUSH,1,ADD,STORE,1,         # i+=1
-                JUMP,8,                             # loop
-                LOAD,0,PRINT,HALT]                  # print sum
-        vm = VM(code, args.debug)
-        vm.run()
-        print(f"\nFibonacci via assembly:")
-        asm = """
-PUSH 0
-STORE 0      ; a=0
-PUSH 1
-STORE 1      ; b=1
-PUSH 0
-STORE 2      ; i=0
-loop:
-LOAD 2
-PUSH 10
-LT
-JUMP_NOT done
-LOAD 0
-PRINT
-LOAD 0
-LOAD 1
-ADD
-STORE 2      ; temp reuse
-LOAD 1
-STORE 0
-LOAD 2
-STORE 1
-PUSH 1
-STORE 2
-JUMP loop
-done:
-HALT
-"""
-        # Simplified: just run sum demo
-        print("Sum 1..100 computed above")
-    elif args.file:
-        with open(args.file) as f: code = assemble(f.read())
-        VM(code, args.debug).run()
-    else: p.print_help()
-if __name__ == "__main__": main()
+def test():
+    # 2 + 3
+    code = assemble((PUSH, 2), (PUSH, 3), ADD, PRINT, HALT)
+    vm = VM(code)
+    assert vm.run() == [5]
+    
+    # (10 - 3) * 2
+    code = assemble((PUSH, 10), (PUSH, 3), SUB, (PUSH, 2), MUL, PRINT, HALT)
+    vm = VM(code)
+    assert vm.run() == [14]
+    
+    # Variables: x=5, y=10, print x+y
+    code = assemble(
+        (PUSH, 5), (STORE, 0),
+        (PUSH, 10), (STORE, 1),
+        (LOAD, 0), (LOAD, 1), ADD, PRINT, HALT
+    )
+    vm = VM(code)
+    assert vm.run() == [15]
+    
+    # Loop: sum 1..5
+    # var[0] = sum, var[1] = i
+    code = assemble(
+        (PUSH, 0), (STORE, 0),   # sum = 0
+        (PUSH, 1), (STORE, 1),   # i = 1
+        # loop start (ip=10):
+        (LOAD, 1), (PUSH, 6), LT,  # i < 6
+        (JZ, 73),                   # if not, jump to end
+        (LOAD, 0), (LOAD, 1), ADD, (STORE, 0),  # sum += i
+        (LOAD, 1), (PUSH, 1), ADD, (STORE, 1),  # i++
+        (JMP, 20),                  # goto loop
+        # end (ip=73):
+        (LOAD, 0), PRINT, HALT
+    )
+    vm = VM(code)
+    assert vm.run() == [15]  # 1+2+3+4+5
+    
+    # Comparison
+    code = assemble((PUSH, 5), (PUSH, 3), GT, PRINT, HALT)
+    vm = VM(code)
+    assert vm.run() == [1]
+    
+    print("All tests passed!")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test()
+    else:
+        print("Usage: bytecode_vm.py test")
